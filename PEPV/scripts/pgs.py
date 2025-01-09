@@ -432,7 +432,7 @@ class PgSystemInfection(AbstractPgSystem):
         return result
 
 
-class PgSystemMacrophageIncluded(AbstractPgSystem):
+class PgSystemInfectionMacrophage(AbstractPgSystem):
     """
     PGS class to compute infection probability for extended viral dynamics 
     the cycle of macrophage is integrated, the establishment of latent cells is 
@@ -623,7 +623,7 @@ class PgSystemReservoirNewApproach(AbstractPgSystem):
         propensity_dict = self._pd_interface.get_propensity()
         for idx in range(1, 8):
             if isinstance(propensity_dict[idx], float):  # add the constant terms into coeff_mat
-                if idx == 7:  # update the const matrix with value of a7
+                if idx == 7:  # update the const matrix with value of a7 (only term in const matrix)
                     const_mat[..., 1, 0] = propensity_dict[idx]
                 for pos, sign in self.pos_dict_coeff[idx]:
                     coeff_mat[..., pos[0], pos[1]] = coeff_mat[..., pos[0], pos[1]] + propensity_dict[idx] * sign
@@ -644,9 +644,9 @@ class PgSystemReservoirNewApproach(AbstractPgSystem):
             kwarg = {'coeff_mat': coeff_mat, 'const_mat': const_mat}
             helpfunc = partial(self._pgs_model_reservoir_cumulative, **kwarg)
             p0 = type(self)._ode_solver(helpfunc, i+1, i, p0, self._time_step)
-            # if one time point in expo_tps reached
             p0_new = torch.zeros([1] + self._shape + [3, 1], dtype=torch.double)
             p0 = torch.cat([p0[0], p0_new], 0)    # concatenate a new p0 [0,0,0]
+            # if one time point in expo_tps reached
             if i in expo_tps:
                 # print(p0.shape)
                 res_expo[i+self._time_span[0]] = torch.flip(p0, dims=[0])
@@ -689,7 +689,7 @@ class PgSystemReservoirNewApproach(AbstractPgSystem):
 
     def compute_cumulative_reservoir_distribution(self, n_reservoir, expo_tps=[]):
         """
-        Compute the cumulative infection probability of each number of reservoir, same way as compute_pe_cumulative
+        Compute the cumulative infection probability of each number of reservoir, same way as compute_pr_cumulative
         :parameter:
         n_reservoir: int
             upper bound of reservoir number. The distribution for range(0, n) reservoir will be computed.
@@ -702,7 +702,6 @@ class PgSystemReservoirNewApproach(AbstractPgSystem):
         # 1 indicate the number of current p0 point, this dimension is for future dimension expansion
         coeff_mat = torch.zeros([self._steps] + [1] + self._shape + [3, 3], dtype=torch.double)
         const_mat = torch.zeros([self._steps] + [1] + self._shape + [3, n_reservoir+1], dtype=torch.double)
-        time_dependent_propensity = []
         propensity_dict = self._pd_interface.get_propensity()
         a6_array = propensity_dict[6]
         for idx in range(1, 8):
@@ -730,6 +729,216 @@ class PgSystemReservoirNewApproach(AbstractPgSystem):
         for i in range(n_points)[::-1]:
             kwarg = {'n_reservoir': n_reservoir, 'coeff_mat': coeff_mat, 'const_mat': const_mat, 'a6_array': a6_array}
             helpfunc = partial(self._pgs_model_reservoir_distribution, **kwarg)
+            p0 = type(self)._ode_solver(helpfunc, i+1, i, p0, self._time_step)
+            # if one time point in expo_tps reached
+            p0 = torch.cat([p0[0], p0_new.clone()], 0)    # concatenate a new p0 [0,0,0]
+            if i in expo_tps:
+                res_expo[i+self._time_span[0]] = torch.flip(p0, dims=[0])
+            const_mat = torch.cat([const_mat, const_mat_original], 1)  # update const matrix, adjust to dim of p0
+        print('done')
+        return torch.flip(p0, dims=[0]), res_expo
+
+
+class PgSystemReservoirNewApproachMacrophage(AbstractPgSystem):
+    """
+    PGS class to compute probability of reservoir establishment, VD contains the 
+    full cycle of macrophage infection (5 viral compartments)
+    """
+    def __init__(self, pd_interface, time_span):
+        super().__init__(pd_interface, time_span)
+        # position of propensity used to compute cumulative reservoir probability (coefficient matrix)
+        self.pos_dict_coeff = {1: [[(0, 0), +1]],
+                               2: [[(1, 1), +1]],
+                               3: [[(2, 2), +1]],
+                               4: [[(0, 0), +1], [(0, 1), -1]],
+                               5: [[(1, 1), +1], [(1, 2), -1]],
+                               6: [[(2, 0), -1]],
+                               7: [[(1, 1), +1]],
+                               8: [[(0, 0), +1], [(0, 3), -1]],
+                               9: [[(3, 3), +1]],
+                               10: [[(4, 4), +1]],
+                               11: [[(3, 3), +1], [(3, 4), -1]], 
+                               12: [[(4, 0), -1]]} 
+        # position of propensity used to compute cumulative probability distribution of reservoir (coefficient matrix)
+        self.pos_dict_dist_coeff = {1: [[(0, 0), +1]],
+                                    2: [[(1, 1), +1]],
+                                    3: [[(2, 2), +1]],
+                                    4: [[(0, 0), +1], [(0, 1), -1]],
+                                    5: [[(1, 1), +1], [(1, 2), -1]],
+                                    6: [[(2, 2), +1]],
+                                    7: [[(1, 1), +1]],
+                                    8: [[(0, 0), +1], [(0, 3), -1]],
+                                    9: [[(3, 3), +1]], 
+                                    10: [[(4, 4), +1]],
+                                    11: [[(3, 3), +1], [(3, 4), -1]],
+                                    12: [[(4, 4), +1]]
+                                    }
+        # position of propensity used to compute cumulative probability distribution of reservoir (constant matrix)
+        self.pos_dict_dist_const = {1: [[(0, 0), +1]],
+                                    2: [[(1, 0), +1]],
+                                    3: [[(2, 0), +1]],
+                                    7: [[(1, 1), +1]],
+                                    9: [[(3, 0), +1]],
+                                    10: [[(4, 0), +1]]}
+
+    def _pgs_model(self, t, p, coeff_mat, const_mat, varying_propensities):
+        raise NotImplementedError
+
+    def _pgs_model_reservoir_cumulative_macrophage(self, t, p, coeff_mat, const_mat):
+        """
+        Right hand side of basic PGS model in vectorized form (V, T1, T2, M1, M2), 
+        used to compute the cumulative probability of reservoir establishment with 
+        consideration of macrophage
+        :parameter:
+        t: float
+        p: ndarray (self._shape, 5, 1)
+        coeff_mat: ndarray (5, 5)
+        const_mat: ndarray (5, 1)
+        :return:
+        model: ndarray (self._shape, 5, 1)
+            The right hand side of the PGS ODE
+        """
+        step = round(t / self._time_step) - 1
+        # expand the coefficient matrix to match the dimension of p0
+        coeff_term = coeff_mat[step].clone().repeat([p.shape[0]] + [1] * (len(self._shape) + 2))
+        const_term = const_mat[step].clone()
+        # a6 * (1 - P_T2)
+        coeff_term[..., 2, 0] = torch.mul(coeff_term[..., 2, 0], (1 - p[..., 2, 0]))
+        # a12 * (1 - P_M2)
+        coeff_term[..., 4, 0] = torch.mul(coeff_term[..., 4, 0], (1 - p[..., 4, 0]))
+        return torch.matmul(coeff_term, p) - const_term
+
+    def compute_pr_cumulative(self, expo_tps=[]):
+        """
+        Compute the cumulative probability of reservoir using new approach (adding different initial point gradually)
+        :parameter:
+        expo_tps: list of exposure time points
+            (have to record the cumulative probability for the corresponding exposure time)
+        :return:
+        result: ndarray (n_points, n_Sample, [n_regimen, ], 5, 1)
+        """
+        n_points = round(self._time_span[1] - self._time_span[0])
+        # 1 indicate the number of current p0 point, this dimension is for future dimension expansion
+        coeff_mat = torch.zeros([self._steps] + [1] + self._shape + [5, 5], dtype=torch.double)
+        const_mat = torch.zeros([self._steps] + [1] + self._shape + [5, 1], dtype=torch.double)
+        time_dependent_propensity = []
+        propensity_dict = self._pd_interface.get_propensity()
+        for idx in range(1, 13):
+            if isinstance(propensity_dict[idx], float):  # add the constant terms into coeff_mat
+                if idx == 7:  # update the const matrix with value of a7
+                    const_mat[..., 1, 0] = propensity_dict[idx]
+                for pos, sign in self.pos_dict_coeff[idx]:
+                    coeff_mat[..., pos[0], pos[1]] = coeff_mat[..., pos[0], pos[1]] + propensity_dict[idx] * sign
+            else:  # store the info of time-varying propensity
+                time_dependent_propensity.append([idx, self.pos_dict_coeff[idx]])
+        for idx, propensity_info in time_dependent_propensity:  # add the time-varying propensities
+            propensity_array = propensity_dict[idx][1:]    # get rid of the additional value at beginning
+            if idx == 7:  # update const_mat with time-varying propensity
+                const_mat[:, 0, ..., 1, 0] = propensity_array
+            for pos, sign in propensity_info:  # update coeff_mat with time-varying propensity
+                coeff_mat[:, 0, ..., pos[0], pos[1]] = coeff_mat[:, 0, ..., pos[0], pos[1]] + propensity_array * sign
+        p0 = torch.zeros([1] + self._shape + [5, 1], dtype=torch.double)
+        const_mat_original = const_mat.clone()
+        res_expo = dict()       # for the result of different exposure time in expo_tps
+        if expo_tps:
+            expo_tps = np.array(expo_tps) - self._time_span[0]
+        for i in range(n_points)[::-1]:
+            kwarg = {'coeff_mat': coeff_mat, 'const_mat': const_mat}
+            helpfunc = partial(self._pgs_model_reservoir_cumulative_macrophage, **kwarg)
+            p0 = type(self)._ode_solver(helpfunc, i+1, i, p0, self._time_step)
+            # if one time point in expo_tps reached
+            p0_new = torch.zeros([1] + self._shape + [5, 1], dtype=torch.double)
+            p0 = torch.cat([p0[0], p0_new], 0)    # concatenate a new p0 [0,0,0,0,0]
+            if i in expo_tps:
+                # print(p0.shape)
+                res_expo[i+self._time_span[0]] = torch.flip(p0, dims=[0])
+            const_mat = torch.cat([const_mat, const_mat_original], 1)  # update const matrix, adjust to dim of p0
+        return torch.flip(p0, dims=[0]), res_expo
+
+    def _pgs_model_reservoir_distribution_macrophage(self, t, p, n_reservoir, coeff_mat, 
+                                          const_mat, a6_array, a12_array):
+        """
+        Right hand side of basic PGS model in vectorized form (5xn), used to compute the cumulative probability of reservoir for different reservoir size (0-n)
+        distribution of reservoir number
+        :parameter:
+        t: float
+        p: ndarray (self._shape, 5*n_reservoir, 1)
+        n_reservoir: number of reservoir (one dimension in p and const_mat)
+        coeff_mat: ndarray (5, 5)
+        const_mat: ndarray (5, 1)
+        :return:
+        model: ndarray (self._shape, 5, n_reervoir)
+            The right hand side of the PGS ODE
+        """
+        step = round(t / self._time_step) - 1
+        if isinstance(a6_array, float):     # take the value of a6 for this step
+            a6 = a6_array
+            a12 = a12_array
+        else:
+            a6 = a6_array[step]
+            a12 = a12_array[step]
+        # take the coeff and const mat of this step and expand the coefficient matrix to match the dimension of p0
+        coeff_term = coeff_mat[step].repeat([p.shape[0]] + [1] * (len(self._shape) + 2))
+        const_term = const_mat[step]
+        # 1. step: tmp_p (3xn) = coeff_mat (5x5) * p (5xn)
+        tmp_p = torch.matmul(coeff_term, p)
+        # 2. step: tmp_p[2, :] = tmp_p[2, :] - a6 * p[2, :] * [p[0, :]] (diagonal matrix of P[0, :])
+        # take the transpose of reversed p0 (for matrix multiplication later)
+        p0_array = torch.transpose(torch.flip(p[..., [0], :], dims=[-1]), -2, -1)
+
+        for i in range(n_reservoir+1):
+            tmp_p[..., 2, i] = tmp_p[..., 2, i] - \
+                               a6 * (p[..., [2], :i+1] @ p0_array[..., n_reservoir-i:, [0]])[..., 0, 0]
+            
+            tmp_p[..., 4, i] = tmp_p[..., 4, i] - \
+                               a12 * (p[..., [4], :i+1] @ p0_array[..., n_reservoir-i:, [0]])[..., 0, 0]
+        # 3. step: tmp_p - const_mat
+        return tmp_p - const_term
+
+    def compute_cumulative_reservoir_distribution(self, n_reservoir, expo_tps=[]):
+        """
+        Compute the cumulative infection probability of each number of reservoir, with consideration of macrophage, same way as compute_pr_cumulative_macrophage
+        :parameter:
+        n_reservoir: int
+            upper bound of reservoir number. The distribution for range(0, n) reservoir will be computed.
+        expo_tps: list of exposure time points
+            (have to record the cumulative probability for the corresponding exposure time)
+        :return:
+        result: ndarray (n_points, n_Sample, [n_regimen, ], 5, 1) (for exposure time points)
+        """
+        print('ok1')
+        n_points = round(self._time_span[1] - self._time_span[0])
+        # 1 indicate the number of current p0 point, this dimension is for future dimension expansion
+        coeff_mat = torch.zeros([self._steps] + [1] + self._shape + [5, 5], dtype=torch.double)
+        const_mat = torch.zeros([self._steps] + [1] + self._shape + [5, n_reservoir+1], dtype=torch.double)
+        propensity_dict = self._pd_interface.get_propensity()
+        a6_array = propensity_dict[6]
+        a12_array = propensity_dict[12]
+        for idx in range(1, 13):
+            if idx in self.pos_dict_dist_const:        # fill propensities into const_mat
+                for pos, sign in self.pos_dict_dist_const[idx]:
+                    if isinstance(propensity_dict[idx], float):     # add the constant terms into const_mat
+                        const_mat[..., pos[0], pos[1]] = const_mat[..., pos[0], pos[1]] + propensity_dict[idx]*sign
+                    else:      # update with time_varing propensities (get rid of the additional value at beginning)
+                        const_mat[:, 0, ..., pos[0], pos[1]] = const_mat[:, 0, ..., pos[0],
+                                                                         pos[1]] + propensity_dict[idx][1:] * sign
+            for pos, sign in self.pos_dict_dist_coeff[idx]:     # fill propensities into coeff_mat
+                if isinstance(propensity_dict[idx], float):  # add the constant terms into coeff_mat
+                    coeff_mat[..., pos[0], pos[1]] = coeff_mat[..., pos[0], pos[1]] + propensity_dict[idx] * sign
+                else:
+                    coeff_mat[:, 0, ..., pos[0], pos[1]] = coeff_mat[:, 0, ..., pos[0],
+                                                                     pos[1]] + propensity_dict[idx][1:] * sign
+        # the extra 1 first dimension will be used for expansion later
+        p0 = torch.zeros([1] + self._shape + [5, n_reservoir+1], dtype=torch.double)
+        p0[..., :, 0] = 1
+        p0_new = p0.clone()          # generate a new p0 template for extension
+        const_mat_original = const_mat.clone()
+        res_expo = dict()       # for the result of different exposure time in expo_tps
+        if expo_tps:
+            expo_tps = np.array(expo_tps) - self._time_span[0]
+        for i in range(n_points)[::-1]:
+            kwarg = {'n_reservoir': n_reservoir, 'coeff_mat': coeff_mat, 'const_mat': const_mat, 'a6_array': a6_array, 'a12_array':a12_array}
+            helpfunc = partial(self._pgs_model_reservoir_distribution_macrophage, **kwarg)
             p0 = type(self)._ode_solver(helpfunc, i+1, i, p0, self._time_step)
             # if one time point in expo_tps reached
             p0 = torch.cat([p0[0], p0_new.clone()], 0)    # concatenate a new p0 [0,0,0]

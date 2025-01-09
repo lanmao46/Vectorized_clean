@@ -153,7 +153,14 @@ class ExtinctionCalculator:
 def calculate_propensity_constant(if_macrophage=False, if_reservoir=False):
     """
     Calculate the reaction propensities a1-a6 with absence of drug considering replicative capacity [/hr]
-    if macrophage is considered, the reactions will be extended to 1-12
+    if_macrophage: if macrophage dynamic considered, 
+    if_macrophage True: dynamics of macrophage considered (a1 - a12)
+        if if_reservoir is False, only reservoir generation is considered (a7), 
+        if_reservoir True: ful dynamics consisting of 6 viral compartments (a1 - a15)
+    if_macrophage False: macrophage not considered;
+        if_reservoir False: neither reservoir nor macrophage is considered (a1 - a6)
+        if_reservoir True: only the generation of reservoir is considered (a1 - a7) 
+        
     """
     a = dict()
     a[1] = (ViralDynamicParameter.CL + ViralDynamicParameter.CL_T * ViralDynamicParameter.T_u) / 24    # v -> *

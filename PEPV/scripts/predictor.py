@@ -5,7 +5,7 @@ import torch
 
 from .ode_solver import euler, rk4
 from .pd import PharmacoDynamicsInterface
-from .pgs import AbstractPgSystem, PgSystemExtinction, PgSystemInfection, PgSystemMacrophageIncluded, PgSystemReservoirNewApproach, PgSystemExtinctionFull
+from .pgs import AbstractPgSystem, PgSystemExtinction, PgSystemInfection, PgSystemInfectionMacrophage, PgSystemReservoirNewApproach, PgSystemExtinctionFull, PgSystemReservoirNewApproachMacrophage
 from .pk import AbstractPharmacokinetics
 from .utils import ViralDynamicParameter, ExtinctionCalculator
 from .utils import DrugClass, calculate_propensities_for_drug_class
@@ -319,7 +319,7 @@ class EfficacyPredictor(object):
 
         self.compute_drug_effect(pd_file, macrophage=macrophage)
         if macrophage:
-            self._set_pgs_class(PgSystemMacrophageIncluded)
+            self._set_pgs_class(PgSystemInfectionMacrophage)
         elif self._pgs_class is not PgSystemInfection:
             self._set_pgs_class(PgSystemInfection)
         self._pgs_object = self._pgs_class(self._pd_interface, self._time_span)
@@ -333,53 +333,66 @@ class EfficacyPredictor(object):
         """
         self.compute_drug_effect(macrophage=macrophage)
         if macrophage:
-            self._set_pgs_class(PgSystemMacrophageIncluded)
+            self._set_pgs_class(PgSystemInfectionMacrophage)
         elif self._pgs_class is not PgSystemInfection:
             self._set_pgs_class(PgSystemInfection)
         self._pgs_object = self._pgs_class(self._pd_interface, self._time_span)
         self._cdf_pi = self._pgs_object.compute_pi_cumulative()
 
-    def compute_cumulative_reservoir_probability(self, expo_tps=[]):
+    def compute_cumulative_reservoir_probability(self, macrophage=False, expo_tps=[]):
         """
         compute the cumulative probability of reservoir establishment when exposure occurs at self._time_span[0].
         Currently it returns same result as compute_cumulative_infection_probability.
-        This function is implemented using the new approach in PGS class PgSystemReservoirNewApproach.
+        This function is implemented using the new approach in PGS class PgSystemReservoirNewApproach AND PgSystemReservoirNewApproachMacrophage.
         :parameter
+        macrophage: if the dynamics of macrophage considered
         expo_tps: list
             time points for which we want to observe as exposure time. If given, the cumulative probability for
             different exposure time will be returned as a dictionary
         """
-        # ATTENTION: here reservoir is used so that the new approach can be called
-        # to compute the probability of reservoir (propensity a1-a7 calculated)
-        # only the establishment of reservoir is included, no further reaction of reservoir.
-        self.compute_drug_effect(reservoir=True)
-        if self._pgs_class is not PgSystemReservoirNewApproach:
-            self._set_pgs_class(PgSystemReservoirNewApproach)
+        # ATTENTION: if macrophage:  macrophage is True and reservoir is False  (propensity a1-a12 calculated)
+        # if not macrophage: 
+        # only the establishment of reservoir is included, no further reaction of reservoir (a1-a7)
+        if macrophage:
+            self.compute_drug_effect(reservoir=False, macrophage=True)
+            if self._pgs_class is not PgSystemReservoirNewApproachMacrophage:
+                self._set_pgs_class(PgSystemReservoirNewApproachMacrophage)
+        else:
+            self.compute_drug_effect(reservoir=True)
+            if self._pgs_class is not PgSystemReservoirNewApproach:
+                self._set_pgs_class(PgSystemReservoirNewApproach)
         self._pgs_object = self._pgs_class(self._pd_interface, self._time_span)
         self._cdf_pr, cdf_expo = self._pgs_object.compute_pr_cumulative(expo_tps)
-        return cdf_expo
+        if expo_tps: 
+            return cdf_expo
 
-    def compute_cumulative_reservoir_distribution(self, n_reservoir, expo_tps=[]):
+    def compute_cumulative_reservoir_distribution(self, n_reservoir, macrophage=False, expo_tps=[]):
         """
-        compute the cumulative probability distribution of reservoir establishment when exposure occurs at
-        self._time_span[0].
-        This function is implemented using the new approach in PGS class PgSystemReservoirNewApproach.
+        compute the cumulative probability distribution of reservoir establishment when exposure occurs at self._time_span[0].
+        This function is implemented using the new approach in PGS class PgSystemReservoirNewApproach AND PgSystemReservoirNewApproachMacrophage.
         :parameter
+        macrophage: if the dynamics of macrophage considered
         n_reservoir: int
             upper bound of reservoir number. The distribution for range(0, n) reservoir will be computed.
         expo_tps: list
             time points for which we want to observe as exposure time. If given, the cumulative probability for
             different exposure time will be returned as a dictionary
         """
-        # ATTENTION: here reservoir is used so that the new approach can be called
-        # to compute the probability of reservoir (propensity a1-a7 calculated)
-        self.compute_drug_effect(reservoir=True)
-        if self._pgs_class is not PgSystemReservoirNewApproach:
-            self._set_pgs_class(PgSystemReservoirNewApproach)
+        # ATTENTION: if macrophage:  macrophage is True and reservoir is False  (propensity a1-a12 calculated)
+        # if not macrophage: 
+        # only the establishment of reservoir is included, no further reaction of reservoir (a1-a7)
+        if macrophage:
+            self.compute_drug_effect(reservoir=False, macrophage=True)
+            if self._pgs_class is not PgSystemReservoirNewApproachMacrophage:
+                self._set_pgs_class(PgSystemReservoirNewApproachMacrophage)
+        else:
+            self.compute_drug_effect(reservoir=True)
+            if self._pgs_class is not PgSystemReservoirNewApproach:
+                self._set_pgs_class(PgSystemReservoirNewApproach)
         self._pgs_object = self._pgs_class(self._pd_interface, self._time_span)
-        self._pr_distribution, cdf_expo = self._pgs_object.compute_cumulative_reservoir_distribution(n_reservoir,
-                                                                                                     expo_tps)
-        return cdf_expo
+        self._pr_distribution, cdf_expo = self._pgs_object.compute_cumulative_reservoir_distribution(n_reservoir, expo_tps)
+        if expo_tps:
+            return cdf_expo
 
     def set_concentration_proportion(self, drug, proportion):
         """
