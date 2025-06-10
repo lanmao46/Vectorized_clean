@@ -1,11 +1,10 @@
 from os.path import exists
 from pathlib import Path
 import pickle
-import torch
-
+import numpy as np
 from .ode_solver import euler, rk4
-from .pd import PharmacoDynamicsInterface
-from .pgs import AbstractPgSystem, PgSystemExtinction, PgSystemInfection, PgSystemInfectionMacrophage, PgSystemReservoirNewApproach, PgSystemExtinctionFull, PgSystemReservoirNewApproachMacrophage
+from .pd import PharmacoDynamicsInterface, PharmacoDynamicsMutant
+from .pgs import AbstractPgSystem, PgSystemExtinction, PgSystemInfection, PgSystemInfectionMacrophage, PgSystemReservoirNewApproach, PgSystemExtinctionFull, PgSystemReservoirNewApproachMacrophage, PgSystemReservoirMutation
 from .pk import AbstractPharmacokinetics
 from .utils import ViralDynamicParameter, ExtinctionCalculator
 from .utils import DrugClass, calculate_propensities_for_drug_class
@@ -79,6 +78,7 @@ class EfficacyPredictor(object):
         self._pe_function_non_medicated = ExtinctionCalculator.get_pe_basic
         self._pe = None
         self._pi = None
+        self._pr = None
         self._phi = None
         self._cdf_pe = None
         self._cdf_pi = None
@@ -262,7 +262,7 @@ class EfficacyPredictor(object):
         """
         if not self._pk_objects:
             self.compute_concentration()
-        self._pd_interface = PharmacoDynamicsInterface(self._pk_objects, file, reservoir, macrophage)
+        self._pd_interface = PharmacoDynamicsInterface(self._pk_objects, reservoir=reservoir, macrophage=macrophage, file=file)
 
     def compute_extinction_probability(self, pd_file=None, reservoir=False):
         """
@@ -393,6 +393,52 @@ class EfficacyPredictor(object):
         self._pr_distribution, cdf_expo = self._pgs_object.compute_cumulative_reservoir_distribution(n_reservoir, expo_tps)
         if expo_tps:
             return cdf_expo
+        
+    def compute_reservoir_probability_mutation(self, strain_dict, p_matrix, pos_strain,  timespan=None, reservoir=True, macrophage=False):
+        """
+        Compute the probability of reservoir establichment with mutation and assign the result to self._pr
+        :parameter:
+        strain_dict: dict that contains the name of strains as keys (including WT), 
+        and contains the IC50 fold change (FC) and the fitness change (fitness);
+        p_matrix: ndarray (n_strains, n_strains), the element p_matrix[i,j] is the probability of strain i mutating to strain j;
+        reservoir: boolean, if the establishment of reservoir is considered (always True here)
+        macrophage: boolean, if the cycle of macrophage (reactivation) is considered in the viral dynamics (currently always False)
+        pos_strain: int
+            the position of the strain in the p_matrix, 0 for wildtype. The probability of reservoir will be computed for this strain
+        timespan: tuple
+            the time span for PGS, default is self._time_span. If given, the probability will be computed for this time span, but only meaningful if the concentration and propensities are already computed. 
+        """
+        
+        # check the form of strain_dict
+        if len(strain_dict) <1 or 'WT' not in strain_dict:
+            raise SystemExit('Strain_dict must contain WT')
+        if 'fitness' not in strain_dict['WT'] or 'FC' not in strain_dict['WT']:
+            raise SystemExit('Strain_dict must contain fitness and FC for WT')
+        # check the form of p_matrix
+        if p_matrix.shape[0] != len(strain_dict) or p_matrix.shape[1] != len(strain_dict):
+            raise SystemExit('Mutation probability matrix is not a square matrix')
+        if not np.all(p_matrix.sum(axis=1).astype(int) == 1):
+            raise SystemExit('Mutation probability matrix is not a valid probability matrix')
+
+        if not self._pk_objects:
+            self.compute_concentration()
+        if self._pd_interface is not PharmacoDynamicsMutant:
+            self._pd_interface = PharmacoDynamicsMutant(self._pk_objects, strain_dict, reservoir, macrophage)
+        if self._pgs_class is not PgSystemReservoirMutation:
+            self._set_pgs_class(PgSystemReservoirMutation)
+        self._pgs_object = self._pgs_class(self._pd_interface, timespan, p_matrix)
+        if timespan is None:
+            timespan = self._time_span
+            self._pr = self._pgs_object.compute_pr_mutation(pos_strain)
+        else:  
+            # case that PGS will be computed for a different time span, only runnable if the initial time point of concentration is 0, i.e.self._time_span[0] == 0
+            if self._time_span[0] != 0:
+                raise SystemExit('The initial time point of concentration must be 0')
+            if timespan[0] < 0 or timespan[1] > self._time_span[1] or timespan[0] > timespan[1]:
+                raise SystemExit('Time span is not correct')
+            self._pr = self._pgs_object.compute_pr_mutation_tmp(pos_strain, timespan)
+        
+        
 
     def set_concentration_proportion(self, drug, proportion):
         """
@@ -454,3 +500,6 @@ class EfficacyPredictor(object):
 
     def get_reservoir_probability_distribution(self):
         return self._pr_distribution
+
+    def get_reservoir_probability_mutation(self):
+        return self._pr

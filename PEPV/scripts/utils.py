@@ -56,6 +56,7 @@ class Drug(Enum):
     FTC_col = (DrugClass.NRTI, 247.2, 0.38, 1)      # used to change the IC50 of FTC-TP
     ISL = (DrugClass.NRTI, 293.258, 0.440029, 1)        # uM for IC50
     # 3TC = (DrugClass.NRTI, None, None, 1)
+    LEN = (DrugClass.PI, None, 1.9, 2.1)        # ng/ml for IC50
 
     def __init__(self, drug_class, molecular_weight, ic50, m):
         self.drug_class = drug_class
@@ -188,26 +189,27 @@ def calculate_propensity_constant(if_macrophage=False, if_reservoir=False):
             a[15] = ViralDynamicParameter.zeta / 24         # Tl -> Tl + Tl
     return a
 
-def calculate_propensities_for_drug_class(propensity_dict, eta_complement, drugclass, if_macrophage=False, if_reservoir=False):
+def calculate_propensities_for_drug_class(propensity_dict, eta_complement, drugclass, if_macrophage=False, if_reservoir=False, fitness=1):
     """
     Calculate the reaction propensities for the given drug effect eta for a certain drug class. The results will be replaced 
     in place in propensity_dict.
-    eta_complement: the array of 1 - eta
+    eta_complement: the array of (1 - eta) * fitness (if mutation)
     """
+    eta_complement = eta_complement * fitness
     if drugclass is DrugClass.InI:
         a5 = eta_complement * ViralDynamicParameter.k_T / 24
         if if_reservoir and not if_macrophage:
             propensity_dict[5] = a5 * (1 - ViralDynamicParameter.P_La5)
-            propensity_dict[7] = a5 * ViralDynamicParameter.P_La5a
+            propensity_dict[7] = a5 * ViralDynamicParameter.P_La5
         elif if_macrophage:
             propensity_dict[7] = a5 * ViralDynamicParameter.P_La5
             propensity_dict[5] = a5 * (1 - ViralDynamicParameter.P_La5)
             propensity_dict[11] = eta_complement * ViralDynamicParameter.k_M / 24
         else:
             propensity_dict[5] = a5
-    elif drugclass is DrugClass.CRA:    # TODO: wrong form of a1!!
+    elif drugclass is DrugClass.CRA:   
         a4 = eta_complement * ViralDynamicParameter.beta_T * ViralDynamicParameter.T_u / 24
-        a1 = (ViralDynamicParameter.CL + (1 / ViralDynamicParameter.rho - 1) * eta_complement * 
+        a1 = (ViralDynamicParameter.CL + eta_complement* (1 / ViralDynamicParameter.rho - 1) * 
                   ViralDynamicParameter.beta_T * ViralDynamicParameter.T_u) / 24
         if if_macrophage:
             propensity_dict[1] = ((1 / ViralDynamicParameter.rho - 1) * eta_complement *  ViralDynamicParameter.beta_M * ViralDynamicParameter.M_u) / 24 + a1

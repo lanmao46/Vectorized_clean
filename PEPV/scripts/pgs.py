@@ -906,7 +906,6 @@ class PgSystemReservoirNewApproachMacrophage(AbstractPgSystem):
         :return:
         result: ndarray (n_points, n_Sample, [n_regimen, ], 5, 1) (for exposure time points)
         """
-        print('ok1')
         n_points = round(self._time_span[1] - self._time_span[0])
         # 1 indicate the number of current p0 point, this dimension is for future dimension expansion
         coeff_mat = torch.zeros([self._steps] + [1] + self._shape + [5, 5], dtype=torch.double)
@@ -947,3 +946,176 @@ class PgSystemReservoirNewApproachMacrophage(AbstractPgSystem):
             const_mat = torch.cat([const_mat, const_mat_original], 1)  # update const matrix, adjust to dim of p0
         print('done')
         return torch.flip(p0, dims=[0]), res_expo
+    
+
+class PgSystemReservoirMutation(AbstractPgSystem):
+    """
+    PGS class to compute the probability of reservoir establishment, with 
+    consideration of mutation and wildtype competition.
+    param:
+    pd_interface: PharmacoDynamicsMutant object (only accept this object here)
+    p_matrix: ndarray (n_strains, n_strains), the element p_matrix[i,j] is the probability of strain i mutating to strain j;
+        
+    """
+    def __init__(self, pd_interface, time_span, p_matrix):
+        super().__init__(pd_interface, time_span)
+        self._propensity_dict = self._pd_interface.get_propensity_dict()
+        self._p_matrix = p_matrix
+        self._n_strains = self._p_matrix.shape[0]
+        self._mask_matrix = torch.ones((3 * self._n_strains, 3 * self._n_strains), dtype=torch.double)
+        # fill the mask matrix with the probability of mutation
+        for row in range(self._n_strains):
+            for col in range(self._n_strains):
+                self._mask_matrix[row*3, col*3+1] = self._p_matrix[row, col]
+        # position of propensities for one strain, other strains can be generated 
+        # by iterating over the correspoding positions
+        self.pos_dict_coeff = {1: [[(0, 0), +1]],
+                               2: [[(1, 1), +1]],
+                               3: [[(2, 2), +1]],
+                               4: [[(0, 0), +1],
+                                   [(0, 1), -1]],
+                               5: [[(1, 1), +1],
+                                   [(1, 2), -1]],
+                               6: [[(2, 0), -1]],
+                               7: [[(1, 1), +1]]}
+
+    def _return_coeff_pos_sign(self, propensity, pos_strain):
+        """
+        function to return the position and sign of the propensity in the coeff_mat
+        used in compute_pr_mutation as a replacement of the original pos_dict_coeff 
+        parameters:
+        propensity: the propensity (1-7) to be calculated
+        pos_strain: the position of the strain in the p_matrix, 0 for wildtype.
+        """
+        if propensity == 1:
+            return [[(pos_strain*3, pos_strain*3), +1]]
+        elif propensity == 2:
+            return [[(pos_strain*3+1, pos_strain*3+1), +1]]
+        elif  propensity == 3:
+            return [[(pos_strain*3+2, pos_strain*3+2), +1]]
+        elif propensity == 4:
+            tmp = [[(pos_strain*3, pos_strain*3), +1],
+                    [(pos_strain*3, pos_strain*3+1), -1]]
+            for i in range(self._n_strains):
+                if i != pos_strain:
+                    tmp.append([(pos_strain*3, i*3+1), -1])
+            return tmp
+        elif propensity == 5:
+            return [[(pos_strain*3+1, pos_strain*3+1), +1], 
+                    [(pos_strain*3+1, pos_strain*3+2), -1]]
+        elif propensity == 6:
+            return [[(pos_strain*3+2, pos_strain*3), -1]]
+        elif propensity == 7:
+            return [[(pos_strain*3+1, pos_strain*3+1), +1]]
+        else:
+            raise ValueError('propensity not in 1-7')
+        
+
+    def _pgs_model(self, t, p, coeff_mat, const_mat, varying_propensities, pos_strain):
+        coeff_mat = coeff_mat.repeat(self._shape + [1, 1])
+        const_mat = const_mat.repeat(self._shape + [1, 1])
+        step = round((t - self._time_span[0]) / self._time_step)
+        for propensity in varying_propensities:
+            for st in range(self._n_strains):
+                strain = list(self._propensity_dict.keys())[st]
+                value = self._propensity_dict[strain][propensity][step]
+                for pos, sign in self._return_coeff_pos_sign(propensity, st):
+                    coeff_mat[..., pos[0], pos[1]] = coeff_mat[..., pos[0], pos[1]] + value * sign
+            if propensity == 7:
+                strain = list(self._propensity_dict.keys())[pos_strain]
+                const_mat[..., 1+pos_strain*3, 0] = self._propensity_dict[strain][7][step]
+        coeff_mat = coeff_mat * self._mask_matrix
+
+        for i in range(self._n_strains):
+            coeff_mat[..., 2+i*3, i*3] = coeff_mat[..., 2+i*3, i*3] * (1 - p[..., 2+i*3, 0])
+        # print(coeff_mat)
+        # print(const_mat)
+        return torch.matmul(coeff_mat, p) - const_mat
+    
+
+    def compute_pr_mutation(self, pos_strain):
+        """
+        Compute the probability of reservoir establishment for a specific strain
+        :parameter:
+        pos_strain: int
+            the position of the strain in the p_matrix, 0 for wildtype. The probability of reservoir will be computed for this strain
+        :return:
+        result: ndarray (n_points, n_Sample, [n_regimen, ], 3*n_strains, 1)
+        """
+        coeff_mat = torch.zeros((3*self._n_strains, 3*self._n_strains), dtype=torch.double)
+        const_mat = torch.zeros((3*self._n_strains, 1), dtype=torch.double)
+        time_dependent_propensity = []
+        propensity_sample = self._pd_interface.get_propensity()
+        
+        for propensity in range(1, 8):         # iterate over a1-a7
+            if isinstance(propensity_sample[propensity], float):
+                for st in range(self._n_strains):    # iterate over each strain
+                    strain = list(self._propensity_dict.keys())[st]
+                    for pos, sign in self._return_coeff_pos_sign(propensity, st):      # iterate over each position in coefficient matrix
+                        coeff_mat[pos[0], pos[1]] = coeff_mat[pos[0], pos[1]] + self._propensity_dict[strain][propensity] * sign
+
+                if propensity == 7:
+                    strain = list(self._propensity_dict.keys())[pos_strain]
+                    const_mat[1+pos_strain*3, 0] = self._propensity_dict[strain][propensity]
+            else:
+                time_dependent_propensity.append(propensity)
+        # print(coeff_mat)
+        kwarg = {'coeff_mat': coeff_mat, 'const_mat': const_mat, 'varying_propensities': time_dependent_propensity, 'pos_strain': pos_strain}
+        helpfunc = partial(self._pgs_model, **kwarg)
+        p0 = torch.zeros(self._shape + [3*self._n_strains, 1], dtype=torch.double)
+        return type(self)._ode_solver(helpfunc, self._time_span[1], self._time_span[0], p0, self._time_step)
+    
+
+    def _pgs_model_tmp(self, t, p, coeff_mat, const_mat, varying_propensities, pos_strain):
+        coeff_mat = coeff_mat.repeat(self._shape + [1, 1])
+        const_mat = const_mat.repeat(self._shape + [1, 1])
+        step = round(t  / self._time_step)
+        for propensity in varying_propensities:
+            for st in range(self._n_strains):
+                strain = list(self._propensity_dict.keys())[st]
+                value = self._propensity_dict[strain][propensity][step]
+                for pos, sign in self._return_coeff_pos_sign(propensity, st):
+                    coeff_mat[..., pos[0], pos[1]] = coeff_mat[..., pos[0], pos[1]] + value * sign
+            if propensity == 7:
+                strain = list(self._propensity_dict.keys())[pos_strain]
+                const_mat[..., 1+pos_strain*3, 0] = self._propensity_dict[strain][7][step]
+        coeff_mat = coeff_mat * self._mask_matrix
+
+        for i in range(self._n_strains):
+            coeff_mat[..., 2+i*3, i*3] = coeff_mat[..., 2+i*3, i*3] * (1 - p[..., 2+i*3, 0])
+        # print(coeff_mat)
+        # print(const_mat)
+        return torch.matmul(coeff_mat, p) - const_mat
+    
+
+    def compute_pr_mutation_tmp(self, pos_strain, timespan):
+        """
+        tmp method for Compute the probability of reservoir establishment for a different timespan
+        :parameter:
+        pos_strain: int
+            the position of the strain in the p_matrix, 0 for wildtype. The probability of reservoir will be computed for this strain
+        :return:
+        result: ndarray (n_points, n_Sample, [n_regimen, ], 3*n_strains, 1)
+        """
+        coeff_mat = torch.zeros((3*self._n_strains, 3*self._n_strains), dtype=torch.double)
+        const_mat = torch.zeros((3*self._n_strains, 1), dtype=torch.double)
+        time_dependent_propensity = []
+        propensity_sample = self._pd_interface.get_propensity()
+        
+        for propensity in range(1, 8):         # iterate over a1-a7
+            if isinstance(propensity_sample[propensity], float):
+                for st in range(self._n_strains):    # iterate over each strain
+                    strain = list(self._propensity_dict.keys())[st]
+                    for pos, sign in self._return_coeff_pos_sign(propensity, st):      # iterate over each position in coefficient matrix
+                        coeff_mat[pos[0], pos[1]] = coeff_mat[pos[0], pos[1]] + self._propensity_dict[strain][propensity] * sign
+
+                if propensity == 7:
+                    strain = list(self._propensity_dict.keys())[pos_strain]
+                    const_mat[1+pos_strain*3, 0] = self._propensity_dict[strain][propensity]
+            else:
+                time_dependent_propensity.append(propensity)
+        # print(coeff_mat)
+        kwarg = {'coeff_mat': coeff_mat, 'const_mat': const_mat, 'varying_propensities': time_dependent_propensity, 'pos_strain': pos_strain}
+        helpfunc = partial(self._pgs_model_tmp, **kwarg)
+        p0 = torch.zeros(self._shape + [3*self._n_strains, 1], dtype=torch.double)
+        return type(self)._ode_solver(helpfunc, timespan[1], timespan[0], p0, self._time_step)

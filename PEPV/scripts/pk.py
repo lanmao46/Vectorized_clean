@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 import numpy as np
 import pandas as pd
 import torch
+import math
 
 from .ode_solver import euler
 from .utils import Drug, DrugClass
@@ -149,22 +150,27 @@ class AbstractPharmacokinetics(ABC):
         if regimen.get_drug() is Drug.DTG:
             return PharmacokineticsDTG(regimen, file, ratio, ode_solver, time_step)
 
-        if regimen.get_drug() is Drug.EFV:
+        elif regimen.get_drug() is Drug.EFV:
             return PharmacokineticsEFV(regimen, file, ratio, ode_solver, time_step)
 
-        if regimen.get_drug() is Drug.ISL:
+        elif regimen.get_drug() is Drug.ISL:
             return PharmacokineticsISL(regimen, file, ratio, ode_solver, time_step)
 
         # comment this condition out to use the old model of NRTI
-        if regimen.get_drug() is Drug.TDF:              # new PK model of TDF (only for women), PMID: 25581815
+        elif regimen.get_drug() is Drug.TDF:              # new PK model of TDF (only for women), PMID: 25581815
             return PharmacokineticsTDF(regimen, file, ratio, ode_solver, time_step)
 
         # comment this condition out to use the old model of NRTI
-        if regimen.get_drug() is Drug.FTC:              # new PK model of FTC (only for women), PMID: 30150483
+        elif regimen.get_drug() is Drug.FTC:              # new PK model of FTC (only for women), PMID: 30150483
             return PharmacokineticsFTC(regimen, file, ratio, ode_solver, time_step)
 
-        if regimen.get_drug_class() is DrugClass.NRTI:      # old model for TDF and FTC, PMID: 27439573
+        elif regimen.get_drug_class() is DrugClass.NRTI:      # old model for TDF and FTC, PMID: 27439573
             return PharmacokineticsNRTI(regimen, file, ratio, ode_solver, time_step)
+        
+        elif regimen.get_drug() is Drug.LEN:
+            return PharmacokineticsLEN(regimen, file, ratio, ode_solver, time_step)
+        else:
+            raise SystemExit('No corresponding PK class, check the input drug')
 
     def set_ode_solver(self, ode_solver):
         """
@@ -615,7 +621,7 @@ class PharmacokineticsEFV(AbstractPharmacokinetics):
 
 class PharmacokineticsISL(AbstractPharmacokinetics):
     """
-    PK model for FTC (of female), from paper Garrett et al. PMID: 30150483
+    PK model for ISL
     unit [uM]
     """
 
@@ -740,3 +746,86 @@ class PharmacokineticsISL(AbstractPharmacokinetics):
         return concentration
 
 
+class PharmacokineticsLEN(AbstractPharmacokinetics):
+    """
+    PK model for Lenacapavir
+    unit [ng/mL]
+    """
+
+    def __init__(self, regimen, sample_file=None, ratio=1, ode_solver=euler, time_step=0.02):
+        super().__init__(regimen, sample_file, ratio, ode_solver, time_step)
+        self._samples = self._generate_sample_parameters()
+        self._coefficient_matrix = self._generate_pk_coefficient_matrix()
+        self._concentration_profile_whole = self._compute_concentration()
+        self._concentration_profile_target = self._concentration_profile_whole[..., [1]]
+        self._last_dose_time = 0
+        self._slice_concentration_array()
+
+    def _generate_sample_parameters(self):
+        """
+        :return:
+        param: double ndarray (n_samples, 7) [Kd, Kid, FSC, Frac, Ke, n, Vd]
+        subcutaneous implant
+        """
+        if self._sample_file:
+            df = pd.read_csv(self._sample_file, index_col='ID', dtype=float)
+            param = torch.tensor(df.iloc[:, 0:].values, dtype=torch.double)
+        else: 
+            param = torch.tensor([[6e-5, 0.0004, 0.881, 0.2, 0.0026, 2, 139*1000]], dtype=torch.double)
+        return param
+
+    def _generate_pk_coefficient_matrix(self):
+        """
+        :return:
+        term: double ndarray (n_samples, [n_regimen, ], 2, 2)
+        """
+        term = torch.zeros([self._samples.shape[0], 2, 2], dtype=torch.double)
+        term[:, 0, 0] = term[:, 0, 0] - self._samples[:, 0] - self._samples[:, 1]
+        term[:, 1, 0] = self._samples[:, 0] / self._samples[:, 6] * self._samples[:, 2] * self._samples[:, 3]
+        term[:, 1, 1] = term[:, 1, 1] - self._samples[:, 4]
+
+        regimen_matrix = self.regimen.get_regimen_matrix()
+        for dim in range(len(regimen_matrix.shape) - 1):
+            term = term.unsqueeze(dim + 1)                  # add dimension according to regimen_matrix
+        term = term.repeat([1] + list(regimen_matrix.shape)[:-1] + [1, 1])
+        return term
+
+    def _pk_model(self, t, c):
+        """
+        :param **kwargs:
+        :parameter:
+        t: double
+        c: double array (n_samples, [n_regimen, ], 2, 1) (SC, C)
+        :return:
+        model: double ndarray (n_samples, [n_regimen, ], 2, 1)
+        """
+            
+        def _gamma_kernel(t):
+            return ((self._samples[:, 1] * t) ** self._samples[:, 5].long() / math.factorial(self._samples[:, 5].long())) * np.exp(-self._samples[:, 1] * t)
+        coefficient_matrix = self._coefficient_matrix.clone()
+        coefficient_matrix[..., 1, 0] = coefficient_matrix[..., 1, 0] + self._samples[:, 1] / self._samples[:, 6] * self._samples[:, 2] * (1 - self._samples[:, 3]) * _gamma_kernel(t - self._last_dose_time)
+
+        return torch.matmul(coefficient_matrix, c)
+
+    def _compute_concentration(self):
+        """
+        :return:
+        concentration: ndarray (n_steps, n_samples, [n_regimen, ], 1)
+        """
+        tmp_concentration = list()
+        period = self.regimen.get_period()
+        regimen_matrix = self.regimen.get_regimen_matrix()
+        # molecular_weight = self.regimen.get_molecular_weight()
+        d0 = torch.zeros([self._samples.shape[0]] + list(regimen_matrix.shape)[:-1] + [2, 1], dtype=torch.double)
+        d_array = None  # initiate variable for later use.
+        
+        for i in range(regimen_matrix.shape[-1]):
+            d0[..., 0, 0] = d0[..., 0, 0] + regimen_matrix[..., i] * 1e6  #ng
+            if regimen_matrix[..., i]:
+                self._last_dose_time = i * period
+            d_array = self._ode_solver(self._pk_model, i * period, (i + 1) * period, d0, self._time_step)
+            d0 = d_array[-1].clone()
+            tmp_concentration.append(d_array[:-1:self._ratio])  # ignore the last point to avoid duplicate
+        tmp_concentration.append(d_array[[-1]])  # add the last point of the last iteration
+        concentration = torch.cat(tmp_concentration).squeeze(dim=-1)
+        return concentration

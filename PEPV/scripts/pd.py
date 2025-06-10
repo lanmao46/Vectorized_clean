@@ -1,33 +1,48 @@
 import os
-
+import numpy as np
 import pandas as pd
 import torch
+from collections import OrderedDict
 from scipy.interpolate import griddata
 
 from .utils import DrugClass, calculate_propensities_for_drug_class, calculate_propensity_constant
 
 
-class PharmacoDynamicsInterface(object):
+class AbstractPharmacodynamicsInterface(object):
     """
-    Class to compute the reaction propensities
-    Parameters:
+    Abstract class of pharmacodynamics interface.Used to find the corresponding PD object for a drug/drug combination, and to compute the reaction propensities.
+    param:
     pk_objects: array-like
         an array contains all PK objects (corresponding to each drug)
     reservoir: boolean
         if reservoir is considered. If the case, add a7 and reduce a5 respectively
     macrophage: boolean
         if macrophage and latent is considered. If the case, add a7-a12 and modify a1 a5.
+    """
+    def __init__(self, pk_objects, reservoir=False, macrophage=False):
+        self._pk_objects = pk_objects
+        self._reservoir = reservoir
+        self._macrophage = macrophage
+    
+    def _map_pk_to_pd(self):
+        """
+        Map the PK objects to the corresponding PD objects.
+        """
+        raise NotImplementedError
+    
+class PharmacoDynamicsInterface(AbstractPharmacodynamicsInterface):
+    """
+    Class to compute the reaction propensities for only wildtype. 
+    Parameters:
     file: str
         file name of possible file for PD computation. Currently only used for Truvada: file of MMOA matrix
     """
     # for Truvada  and Truvada + other RTI e.g. EFV
     drugCombination = {'FTC': {'TDF': 'Truvada'}, 'EFV':{'FTC': {'TDF':['Truvada', 'EFV']}}}
 
-    def __init__(self, pk_objects, file=None, reservoir=False, macrophage=False):
-        self._pk_objects = pk_objects
+    def __init__(self, pk_objects, reservoir=False, macrophage=False, file=None):
+        super().__init__(pk_objects, reservoir, macrophage)
         self._file = file
-        self._reservoir = reservoir
-        self._macrophage = macrophage
         self._pd_objects = self._map_pk_to_pd()
         self._combine_pd()
         
@@ -202,21 +217,24 @@ class AbstractPharmacodynamics(object):
         and new approach will be used for cumulative probability (PGS class: PgSystemReservoirNewApproach)
     macrophage: boolean
         indicate if the macrophage is included. If True, there will be 12 reactions
+    ic50_fc: float
+        the IC50 fold change, default is 1 (wildtype)
    Attributes
    ------------
    _pk_objects: array like
    _propensities: dict
         contain the propensity array a1-a6
     """
-    def __init__(self, pk_objects, reservoir=False, macrophage=False):
+    def __init__(self, pk_objects, reservoir=False, macrophage=False, ic50_fc=1, fitness=1):
         self._pk_objects = pk_objects
         self._macrophage = macrophage
         self._reservoir = reservoir
+        self._fitness = fitness
         self._propensities = calculate_propensity_constant(self._macrophage, self._reservoir)
         if len(self._pk_objects) == 1:
             pk_object = self._pk_objects[0]
             m = pk_object.regimen.get_hill_coefficient()
-            ic_50 = pk_object.regimen.get_ic50()
+            ic_50 = pk_object.regimen.get_ic50() * ic50_fc
             pk_profile = pk_object.get_concentration()
             self._eta = pk_profile[..., 0] ** m / (ic_50 ** m + pk_profile[..., 0] ** m)
 
@@ -240,30 +258,30 @@ class PharmacodynamicsInI(AbstractPharmacodynamics):
     """
     Class of pharmacodynamics model of InI
     """
-    def __init__(self, pk_objects, reservoir=False, macrophage=False):
-        super().__init__(pk_objects, reservoir, macrophage)
+    def __init__(self, pk_objects, reservoir=False, macrophage=False, ic50_fc=1, fitness=1):
+        super().__init__(pk_objects, reservoir, macrophage, ic50_fc, fitness)
         self._compute_distinct_propensities()
 
     def _compute_distinct_propensities(self):
         """
         Compute the propensity for InI
         """
-        calculate_propensities_for_drug_class(self._propensities, 1 - self._eta, DrugClass.InI, self._macrophage, self._reservoir)
+        calculate_propensities_for_drug_class(self._propensities, 1 - self._eta, DrugClass.InI, self._macrophage, self._reservoir, self._fitness)
         
 
 class PharmacodynamicsCRA(AbstractPharmacodynamics):
     """
     Class of pharmacodynamics model of CRA, for one mutant strain against CRA
     """
-    def __init__(self, pk_objects, reservoir=False, macrophage=False):
-        super().__init__(pk_objects, reservoir, macrophage)
+    def __init__(self, pk_objects, reservoir=False, macrophage=False, ic50_fc=1, fitness=1):
+        super().__init__(pk_objects, reservoir, macrophage, ic50_fc, fitness)
         self._compute_distinct_propensities()
 
     def _compute_distinct_propensities(self):
         """
         Compute the propensity for CRA
         """
-        calculate_propensities_for_drug_class(self._propensities, 1 - self._eta, DrugClass.CRA, self._macrophage, self._reservoir)
+        calculate_propensities_for_drug_class(self._propensities, 1 - self._eta, DrugClass.CRA, self._macrophage, self._reservoir, self._fitness)
         
 
 
@@ -271,15 +289,15 @@ class PharmacodynamicsRTI(AbstractPharmacodynamics):
     """
     Class of pharmacodynamics model of RTI, for one mutant strain
     """
-    def __init__(self, pk_objects, reservoir=False, macrophage=False):
-        super().__init__(pk_objects, reservoir, macrophage)
+    def __init__(self, pk_objects, reservoir=False, macrophage=False, ic50_fc=1, fitness=1):
+        super().__init__(pk_objects, reservoir, macrophage, ic50_fc, fitness)
         self._compute_distinct_propensities()
 
     def _compute_distinct_propensities(self):
         """
         Compute the propensity for RTI
         """
-        calculate_propensities_for_drug_class(self._propensities, 1 - self._eta, DrugClass.RTI, self._macrophage, self._reservoir)
+        calculate_propensities_for_drug_class(self._propensities, 1 - self._eta, DrugClass.RTI, self._macrophage, self._reservoir, self._fitness)
         
 
 
@@ -287,15 +305,15 @@ class PharmacodynamicsPI(AbstractPharmacodynamics):
     """
     Class of pharmacodynamics model of PI, for one mutant strain against PI
     """
-    def __init__(self, pk_objects, reservoir=False, macrophage=False):
-        super().__init__(pk_objects, reservoir, macrophage)
+    def __init__(self, pk_objects, reservoir=False, macrophage=False, ic50_fc=1, fitness=1):
+        super().__init__(pk_objects, reservoir, macrophage, ic50_fc, fitness)
         self._compute_distinct_propensities()
 
     def _compute_distinct_propensities(self):
         """
         Compute the propensity for PI
         """
-        calculate_propensities_for_drug_class(self._propensities, 1 - self._eta, DrugClass.PI, self._macrophage, self._reservoir)
+        calculate_propensities_for_drug_class(self._propensities, 1 - self._eta, DrugClass.PI, self._macrophage, self._reservoir, self._fitness)
         
 
 class PharmacodynamicsTruvada(AbstractPharmacodynamics):
@@ -303,8 +321,8 @@ class PharmacodynamicsTruvada(AbstractPharmacodynamics):
     Class of pharmacodynamics model of Truvada
     """
 
-    def __init__(self, pk_objects, mmoa_file=None, reservoir=False, macrophage=False):
-        super().__init__(pk_objects, reservoir, macrophage)
+    def __init__(self, pk_objects, mmoa_file=None, reservoir=False, macrophage=False, ic50_fc=1, fitness=1):
+        super().__init__(pk_objects, reservoir, macrophage, ic50_fc, fitness)
         self._compute_distinct_propensities(file=mmoa_file)
 
     def _compute_distinct_propensities(self, file=None, interpolation=True):
@@ -345,3 +363,55 @@ class PharmacodynamicsTruvada(AbstractPharmacodynamics):
             eta_new = torch.clamp(eta_new, min=0, max=1)
         self._eta = 1 - torch.tensor(eta_new, dtype=torch.double)
         calculate_propensities_for_drug_class(self._propensities, 1 - self._eta, DrugClass.RTI, self._macrophage, self._reservoir)
+
+
+class PharmacoDynamicsMutant(AbstractPharmacodynamicsInterface):
+    """
+    Class of pharmacodynamicsInterface for mutant strains.
+    param:
+        strain_dict: OrderedDict that contains the name of strains as keys (including WT), 
+        and contains the IC50 fold change (FC) and the fitness change (fitness); must be 
+        ordered so that the order of strains (keys) will always be constant
+        
+        If strains=1, only single mutation is obtained, two sets of propensities
+        i.e. a10-a70 (wild type), a11-a71 (mutant strain) and 
+        b01 (V0 -> T11) b10 (V1 -> T10); 
+        if strains=3, two single mutaions and their double mutation are observed, 
+        then four sets of propensities a10, a11, a12 and a13 (double mutaion 
+        always the 3rd one), b0(1,2,3), b1(0,2,3), b2(0,1,3) and b3(0,1,2)
+    """
+    def __init__(self, pk_objects, strain_dict, reservoir=True, macrophage=False):
+        super().__init__(pk_objects, reservoir, macrophage)
+        self._strain_dict = strain_dict
+        self._pd_objects = OrderedDict()
+        for strain in self._strain_dict:
+            self._pd_objects[strain] = self._map_pk_to_pd(self._strain_dict[strain]['FC'], 
+                                                          self._strain_dict[strain]['fitness'])
+        self._propensity_dict = OrderedDict()
+        for strain in self._pd_objects:
+            self._propensity_dict[strain] = self._pd_objects[strain].get_propensities()
+
+    def _map_pk_to_pd(self, ic50_fc, fitness):
+        """
+        Map the PK objects to the corresponding PD objects.
+        """
+        if len(self._pk_objects) == 1:
+            if self._pk_objects[0].regimen.get_drug_class() is DrugClass.CRA:
+                return PharmacodynamicsCRA(self._pk_objects, self._reservoir, self._macrophage, ic50_fc, fitness)
+            elif self._pk_objects[0].regimen.get_drug_class() is DrugClass.InI:
+                return PharmacodynamicsInI(self._pk_objects, self._reservoir, self._macrophage, ic50_fc, fitness)
+            elif self._pk_objects[0].regimen.get_drug_class() is DrugClass.PI:
+                return PharmacodynamicsPI(self._pk_objects, self._reservoir, self._macrophage, ic50_fc, fitness)
+            else:
+                return PharmacodynamicsRTI(self._pk_objects, self._reservoir, self._macrophage, ic50_fc, fitness)
+        else:
+            raise SystemExit('Currently only one drug is allowed for mutant strain')
+        
+
+    def get_propensity(self):
+        # to keep the consistence with PharmacoDynamicsInterface, return the propensity dict of one strain
+        return self._propensity_dict['WT']
+    
+    def get_propensity_dict(self):
+        return self._propensity_dict
+        
