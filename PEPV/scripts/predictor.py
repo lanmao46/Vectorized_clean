@@ -426,9 +426,9 @@ class EfficacyPredictor(object):
             self._pd_interface = PharmacoDynamicsMutant(self._pk_objects, strain_dict, reservoir, macrophage)
         if self._pgs_class is not PgSystemReservoirMutation:
             self._set_pgs_class(PgSystemReservoirMutation)
-        self._pgs_object = self._pgs_class(self._pd_interface, timespan, p_matrix)
+        self._pgs_object = self._pgs_class(self._pd_interface, self._time_span, p_matrix)
         if timespan is None:
-            timespan = self._time_span
+            #timespan = self._time_span
             self._pr = self._pgs_object.compute_pr_mutation(pos_strain)
         else:  
             # case that PGS will be computed for a different time span, only runnable if the initial time point of concentration is 0, i.e.self._time_span[0] == 0

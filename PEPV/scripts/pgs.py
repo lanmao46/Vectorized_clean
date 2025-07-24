@@ -1091,6 +1091,7 @@ class PgSystemReservoirMutation(AbstractPgSystem):
     def compute_pr_mutation_tmp(self, pos_strain, timespan):
         """
         tmp method for Compute the probability of reservoir establishment for a different timespan
+        (for the cumulative probability)
         :parameter:
         pos_strain: int
             the position of the strain in the p_matrix, 0 for wildtype. The probability of reservoir will be computed for this strain

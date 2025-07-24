@@ -765,13 +765,19 @@ class PharmacokineticsLEN(AbstractPharmacokinetics):
         """
         :return:
         param: double ndarray (n_samples, 7) [Kd, Kid, FSC, Frac, Ke, n, Vd]
-        subcutaneous implant
+        subcutaneous injection and inter muscular injection
         """
         if self._sample_file:
             df = pd.read_csv(self._sample_file, index_col='ID', dtype=float)
             param = torch.tensor(df.iloc[:, 0:].values, dtype=torch.double)
         else: 
-            param = torch.tensor([[6e-5, 0.0004, 0.881, 0.2, 0.0026, 2, 139*1000]], dtype=torch.double)
+            if self.regimen.get_administration().lower() == 'sc':
+                param = torch.tensor([[6e-5, 0.0004, 0.881, 0.2, 0.0026, 2, 139*1000]], dtype=torch.double)
+            elif self.regimen.get_administration().lower() == 'im':
+                param = torch.tensor([[0.000185, 0.000115, 1, 0.051, 0.0026, 1, 139*1000]], dtype=torch.double)
+            else:
+                raise ValueError('Unknown administration method')
+
         return param
 
     def _generate_pk_coefficient_matrix(self):
