@@ -52,11 +52,12 @@ class Drug(Enum):
     TDF = (DrugClass.NRTI, 635.5, 0.1, 1)       # uM for IC50
     TDF_vag = (DrugClass.NRTI, 635.5, 0.156909539547242, 1)    # used to change the ic50 of TDF
     TDF_col = (DrugClass.NRTI, 635.5, 0.0941663630292149, 1)
-    FTC = (DrugClass.NRTI, 247.2, 0.85, 1)      # uM for IC50
+    FTC = (DrugClass.NRTI, 247.2, 0.84, 1)      # uM for IC50
     FTC_col = (DrugClass.NRTI, 247.2, 0.38, 1)      # used to change the IC50 of FTC-TP
-    ISL = (DrugClass.NRTI, 293.258, 0.440029, 1)        # uM for IC50
+    ISL = (DrugClass.NRTI, 293.258, 0.43, 1)        # uM for IC50
     # 3TC = (DrugClass.NRTI, None, None, 1)
-    LEN = (DrugClass.PI, None, 1.9, 2.1)        # ng/ml for IC50
+    LEN = (DrugClass.PI, 968.28, 1.6, 2.1)        # ng/ml for IC50
+    CAB = (DrugClass.InI, 405.4, 0.0184, 1)        # ug/ml for IC50 (45.4 nM)
 
     def __init__(self, drug_class, molecular_weight, ic50, m):
         self.drug_class = drug_class

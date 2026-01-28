@@ -169,6 +169,9 @@ class AbstractPharmacokinetics(ABC):
         
         elif regimen.get_drug() is Drug.LEN:
             return PharmacokineticsLEN(regimen, file, ratio, ode_solver, time_step)
+        
+        elif regimen.get_drug() is Drug.CAB:
+            return PharmacokineticsCAB(regimen, file, ratio, ode_solver, time_step)
         else:
             raise SystemExit('No corresponding PK class, check the input drug')
 
@@ -380,7 +383,7 @@ class PharmacokineticsTDF(AbstractPharmacokinetics):
             df = pd.read_csv(self._sample_file, index_col='ID', dtype=float)
             param = torch.tensor(df.iloc[:, 0:].values, dtype=torch.double)
         else:       # median of the PK parameters of 1000 individuals
-            param = torch.tensor([[9.24, 0.631, 0.396, 0.016, 1.3e-2, 0.1313, 360.94]], dtype=torch.double)
+            param = torch.tensor([[9.79, 0.631, 0.396, 0.017, 1.3e-2, 0.13, 385.7]], dtype=torch.double)
         return param
 
     def _generate_pk_coefficient_matrix(self):
@@ -465,7 +468,7 @@ class PharmacokineticsFTC(AbstractPharmacokinetics):
             df = pd.read_csv(self._sample_file, index_col='ID', dtype=float)
             param = torch.tensor(df.iloc[:, 0:].values, dtype=torch.double)
         else:       # median of the PK parameters of 1000 individuals
-            param = torch.tensor([[0.596, 21.87, 6.93,	11.4, 0.74,	7.482,	60.40, 0.989, 118.515]], dtype=torch.double)
+            param = torch.tensor([[0.584, 21.87, 6.83, 11.4, 0.74, 7.482, 60.40, 0.989, 123]], dtype=torch.double)
         return param
 
     def _generate_pk_coefficient_matrix(self):
@@ -745,12 +748,10 @@ class PharmacokineticsISL(AbstractPharmacokinetics):
             concentration = torch.cat(tmp_concentration).squeeze(dim=-1)
         return concentration
 
-
+"""
 class PharmacokineticsLEN(AbstractPharmacokinetics):
-    """
-    PK model for Lenacapavir
-    unit [ng/mL]
-    """
+    #PK model for Lenacapavir
+    #unit [ng/mL]
 
     def __init__(self, regimen, sample_file=None, ratio=1, ode_solver=euler, time_step=0.02):
         super().__init__(regimen, sample_file, ratio, ode_solver, time_step)
@@ -762,33 +763,30 @@ class PharmacokineticsLEN(AbstractPharmacokinetics):
         self._slice_concentration_array()
 
     def _generate_sample_parameters(self):
-        """
-        :return:
-        param: double ndarray (n_samples, 7) [Kd, Kid, FSC, Frac, Ke, n, Vd]
-        subcutaneous injection and inter muscular injection
-        """
+        #:return:
+        #param: double ndarray (n_samples, 7) [Kd, Kid, FSC, Frac, Ke, n, Vd] subcutaneous injection and inter muscular injection
+        
         if self._sample_file:
             df = pd.read_csv(self._sample_file, index_col='ID', dtype=float)
             param = torch.tensor(df.iloc[:, 0:].values, dtype=torch.double)
         else: 
             if self.regimen.get_administration().lower() == 'sc':
-                param = torch.tensor([[6e-5, 0.0004, 0.881, 0.2, 0.0026, 2, 139*1000]], dtype=torch.double)
+                param = torch.tensor([[0.039, 0.0006, 1, 0.015, 0.0026, 2, 1617.54]], dtype=torch.double)
             elif self.regimen.get_administration().lower() == 'im':
-                param = torch.tensor([[0.000185, 0.000115, 1, 0.051, 0.0026, 1, 139*1000]], dtype=torch.double)
+                param = torch.tensor([[0.0003, 0.0004, 1, 0.11, 0.0026, 2, 1617.54]], dtype=torch.double)
             else:
-                raise ValueError('Unknown administration method')
+                sys.stderr.write('Unknown administration method')
 
         return param
 
     def _generate_pk_coefficient_matrix(self):
-        """
-        :return:
-        term: double ndarray (n_samples, [n_regimen, ], 2, 2)
-        """
+        # :return:
+        # term: double ndarray (n_samples, [n_regimen, ], 2, 2)
+    
         term = torch.zeros([self._samples.shape[0], 2, 2], dtype=torch.double)
-        term[:, 0, 0] = term[:, 0, 0] - self._samples[:, 0] - self._samples[:, 1]
+        term[:, 0, 0] = - self._samples[:, 0] - self._samples[:, 1]
         term[:, 1, 0] = self._samples[:, 0] / self._samples[:, 6] * self._samples[:, 2] * self._samples[:, 3]
-        term[:, 1, 1] = term[:, 1, 1] - self._samples[:, 4]
+        term[:, 1, 1] = - self._samples[:, 4]
 
         regimen_matrix = self.regimen.get_regimen_matrix()
         for dim in range(len(regimen_matrix.shape) - 1):
@@ -797,14 +795,12 @@ class PharmacokineticsLEN(AbstractPharmacokinetics):
         return term
 
     def _pk_model(self, t, c):
-        """
-        :param **kwargs:
-        :parameter:
-        t: double
-        c: double array (n_samples, [n_regimen, ], 2, 1) (SC, C)
-        :return:
-        model: double ndarray (n_samples, [n_regimen, ], 2, 1)
-        """
+        #:param **kwargs:
+        # :parameter:
+        # t: double
+        # c: double array (n_samples, [n_regimen, ], 2, 1) (SC, C)
+        # :return:
+        # model: double ndarray (n_samples, [n_regimen, ], 2, 1)
             
         def _gamma_kernel(t):
             return ((self._samples[:, 1] * t) ** self._samples[:, 5].long() / math.factorial(self._samples[:, 5].long())) * np.exp(-self._samples[:, 1] * t)
@@ -814,10 +810,8 @@ class PharmacokineticsLEN(AbstractPharmacokinetics):
         return torch.matmul(coefficient_matrix, c)
 
     def _compute_concentration(self):
-        """
-        :return:
-        concentration: ndarray (n_steps, n_samples, [n_regimen, ], 1)
-        """
+        # :return:
+        # concentration: ndarray (n_steps, n_samples, [n_regimen, ], 1)
         tmp_concentration = list()
         period = self.regimen.get_period()
         regimen_matrix = self.regimen.get_regimen_matrix()
@@ -834,4 +828,195 @@ class PharmacokineticsLEN(AbstractPharmacokinetics):
             tmp_concentration.append(d_array[:-1:self._ratio])  # ignore the last point to avoid duplicate
         tmp_concentration.append(d_array[[-1]])  # add the last point of the last iteration
         concentration = torch.cat(tmp_concentration).squeeze(dim=-1)
+        return concentration
+""" 
+
+class PharmacokineticsLEN(AbstractPharmacokinetics):
+    """
+    PK model for Lenacapavir
+    unit [ng/mL]
+    """
+
+    def __init__(self, regimen, sample_file=None, ratio=1, ode_solver=euler, time_step=0.02):
+        super().__init__(regimen, sample_file, ratio, ode_solver, time_step)
+        self._samples = self._generate_sample_parameters()
+        self._coefficient_matrix = self._generate_pk_coefficient_matrix()
+        self._dose_times = []
+        self._PI_indirect = []
+        self._concentration_profile_whole = self._compute_concentration() * 1000  # ng/mL
+        self._concentration_profile_target = self._concentration_profile_whole[..., [2]]
+        self._slice_concentration_array()
+
+    def _generate_sample_parameters(self):
+        """
+        :return:
+        param: double ndarray (n_samples, 7) [Ka, Kd, Kid, Frac, Ke, n, Vd]
+        subcutaneous injection and inter muscular injection
+        """
+        if self._sample_file:
+            df = pd.read_csv(self._sample_file, index_col='ID', dtype=float)
+            param = torch.tensor(df.iloc[:, 0:].values, dtype=torch.double)
+        else: 
+            if self.regimen.get_administration().lower() == 'sc':
+                param = torch.tensor([[0, 0.039, 0.0006, 0.015, 0.0026, 2, 1617.54]], dtype=torch.double)
+            elif self.regimen.get_administration().lower() == 'im':
+                param = torch.tensor([[0, 0.0003, 0.0004, 0.11, 0.0026, 2, 1617.54]], dtype=torch.double)
+            else:
+                sys.stderr.write('Unknown administration method')
+
+        return param
+
+    def _generate_pk_coefficient_matrix(self):
+        """
+        :return:
+        term: double ndarray (n_samples, [n_regimen, ], 3, 3)
+        """
+        term = torch.zeros([self._samples.shape[0], 3, 3], dtype=torch.double)
+        term[:, 0, 0] = -self._samples[:, 0] 
+        term[:, 1, 1] = -self._samples[:, 1] 
+        term[:, 2, 0] = self._samples[:, 0] / self._samples[:, 6]
+        term[:, 2, 1] = self._samples[:, 1] / self._samples[:, 6]
+        term[:, 2, 2] = -self._samples[:, 4]
+        regimen_matrix = self.regimen.get_regimen_matrix()
+        for dim in range(len(regimen_matrix.shape) - 1):
+            term = term.unsqueeze(dim + 1)                  # add dimension according to regimen_matrix
+        term = term.repeat([1] + list(regimen_matrix.shape)[:-1] + [1, 1])
+        return term
+
+    def _pk_model(self, t, c):
+        """
+        :param **kwargs:
+        :parameter:
+        t: double
+        c: double array (n_samples, [n_regimen, ], 3, 1) (Oral, PI_dir, C)
+        :return:
+        model: double ndarray (n_samples, [n_regimen, ], 3, 1)
+        """
+        
+        def _gamma_kernel(tau):
+            return ((self._samples[:, 2] * tau) ** (self._samples[:, 5].long() - 1) / math.factorial(self._samples[:, 5].long() - 1)) * np.exp(-self._samples[:, 2] * tau) * self._samples[:, 2]
+        
+        coefficient_matrix = self._coefficient_matrix.clone()
+        const_matrix = torch.zeros([self._samples.shape[0], 3, 1], dtype=torch.double)
+        gamma_input = 0
+        for dose_time, PI_ind in zip(self._dose_times, self._PI_indirect):        
+            gamma_input += PI_ind * _gamma_kernel(t - dose_time)
+        const_matrix[:, 2, 0] = gamma_input / self._samples[:, 6]
+        return torch.matmul(coefficient_matrix, c) + const_matrix
+
+    def _compute_concentration(self):
+        """
+        :return:
+        concentration: ndarray (n_steps, n_samples, [n_regimen, ], 1)
+        """
+        tmp_concentration = list()
+        period = self.regimen.get_period()
+        regimen_matrix = self.regimen.get_regimen_matrix()
+        d0 = torch.zeros([self._samples.shape[0]] + list(regimen_matrix.shape)[:-1] + [3, 1], dtype=torch.double)
+        d_array = None  # initiate variable for later use.
+        
+
+        for i in range(regimen_matrix.shape[-1]):
+            d0[..., 1, 0] = d0[..., 1, 0] + regimen_matrix[..., i] * self._samples[:, 3]  #mg
+            if regimen_matrix[..., i]:
+                self._dose_times.append(i * period)
+                self._PI_indirect.append(regimen_matrix[..., i] * (1 - self._samples[:, 3]))
+            d_array = self._ode_solver(self._pk_model, i * period, (i + 1) * period, d0, self._time_step)
+            d0 = d_array[-1].clone()
+            tmp_concentration.append(d_array[:-1:self._ratio])  # ignore the last point to avoid duplicate
+        tmp_concentration.append(d_array[[-1]])  # add the last point of the last iteration
+        concentration = torch.cat(tmp_concentration).squeeze(dim=-1)
+        return concentration
+
+
+class PharmacokineticsCAB(AbstractPharmacokinetics):
+    """
+    PK model for long-acting Cabotegravir (intramuscular injection), can also be used for oral administration
+    unit [ng/mL]
+    """
+
+    def __init__(self, regimen, sample_file=None, ratio=1, ode_solver=euler, time_step=0.02):
+        super().__init__(regimen, sample_file, ratio, ode_solver, time_step)
+        self._samples = self._generate_sample_parameters()
+        self._coefficient_matrix = self._generate_pk_coefficient_matrix()
+        self._concentration_profile_whole = self._compute_concentration()
+        self._concentration_profile_target = self._concentration_profile_whole[..., [1]]
+        self._last_dose_time = 0
+        self._slice_concentration_array()
+
+    def _generate_sample_parameters(self):
+        """
+        :return:
+        param: double ndarray (n_samples, 5) [CL/F, V2/F, Ka, V3/F, Q/F]
+        For IM injection and oral administration: the value of Ka is different
+        """
+        if self._sample_file:
+            df = pd.read_csv(self._sample_file, index_col='ID', dtype=float)
+            param = torch.tensor(df.iloc[:, 4:].values, dtype=torch.double)
+        else: 
+            if self.regimen.get_administration().lower() == 'oral':
+                param = torch.tensor([[0.151, 5.27, 1.41, 2.43, 0.507]], dtype=torch.double)
+            elif self.regimen.get_administration().lower() == 'im':
+                param = torch.tensor([[0.151, 5.27, 0.000733, 2.43, 0.507]], dtype=torch.double)
+            else:
+                sys.stderr.write('Unknown administration method')
+        return param
+
+    def _generate_pk_coefficient_matrix(self):
+        """
+        :return:
+        term: double ndarray (n_samples, [n_regimen, ], 3, 3)
+        """
+        term = torch.zeros([self._samples.shape[0], 3, 3], dtype=torch.double)
+        term[:, 0, 0] = -self._samples[:, 2]
+        term[:, 1, 0] = self._samples[:, 2]
+        term[:, 1, 1] = -(self._samples[:, 0] + self._samples[:, 4])/ self._samples[:, 1] 
+        term[:, 1, 2] = self._samples[:, 4] / self._samples[:, 3]
+        term[:, 2, 1] = self._samples[:, 4] / self._samples[:, 1]
+        term[:, 2, 2] = -self._samples[:, 4] / self._samples[:, 3]
+
+        regimen_matrix = self.regimen.get_regimen_matrix()
+        for dim in range(len(regimen_matrix.shape) - 1):
+            term = term.unsqueeze(dim + 1)                  # add dimension according to regimen_matrix
+        term = term.repeat([1] + list(regimen_matrix.shape)[:-1] + [1, 1])
+        return term
+
+    def _pk_model(self, t, c):
+        """
+        :param **kwargs:
+        :parameter:
+        t: double
+        c: double array (n_samples, [n_regimen, ], 3, 1) (D, Cc, Cp)
+        :return:
+        model: double ndarray (n_samples, [n_regimen, ], 3, 1)
+        """
+        return torch.matmul(self._coefficient_matrix, c)
+
+    def _compute_concentration(self):
+        """
+        :return:
+        concentration: ndarray (n_steps, n_samples, [n_regimen, ], 1)
+        """
+        tmp_concentration = list()
+        period = self.regimen.get_period()
+        regimen_matrix = self.regimen.get_regimen_matrix()
+        # molecular_weight = self.regimen.get_molecular_weight()
+        d0 = torch.zeros([self._samples.shape[0]] + list(regimen_matrix.shape)[:-1] + [3, 1], dtype=torch.double)
+        d_array = None  # initiate variable for later use.
+        samples = self._samples.clone()                    # generate a copy of pk parameters of samples
+        for dim in range(len(regimen_matrix.shape) - 1):        # add dimension to self._samples for later use:
+            samples = samples.unsqueeze(dim + 1)      # C1 has to be divided by corresponding volume
+        samples = samples.repeat([1] + list(regimen_matrix.shape)[:-1] + [1])
+        
+        for i in range(regimen_matrix.shape[-1]):
+            d0[..., 0, 0] = d0[..., 0, 0] + regimen_matrix[..., i]   #mg
+            if regimen_matrix[..., i]:
+                self._last_dose_time = i * period
+            d_array = self._ode_solver(self._pk_model, i * period, (i + 1) * period, d0, self._time_step)
+            d0 = d_array[-1].clone()
+            tmp_concentration.append(d_array[:-1:self._ratio])  # ignore the last point to avoid duplicate
+        tmp_concentration.append(d_array[[-1]])  # add the last point of the last iteration
+        concentration = torch.cat(tmp_concentration).squeeze(dim=-1)
+        concentration[..., 1] = torch.div(concentration[..., 1],
+                                          samples[..., 1])  # C1: central compartment divided by central volume
         return concentration

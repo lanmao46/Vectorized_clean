@@ -394,7 +394,7 @@ class EfficacyPredictor(object):
         if expo_tps:
             return cdf_expo
         
-    def compute_reservoir_probability_mutation(self, strain_dict, p_matrix, pos_strain,  timespan=None, reservoir=True, macrophage=False):
+    def compute_infection_probability_mutation(self, strain_dict, p_matrix, pos_strain,  timespan=None, reservoir=True, macrophage=False):
         """
         Compute the probability of reservoir establichment with mutation and assign the result to self._pr
         :parameter:
@@ -468,6 +468,11 @@ class EfficacyPredictor(object):
     def get_concentration(self, drug):
         for pk in self._pk_objects:
             if pk.regimen.get_drug_name() == drug:
+                return pk.get_concentration()
+    
+    def get_concentration_whole(self, drug):
+        for pk in self._pk_objects:
+            if pk.regimen.get_drug_name() == drug:
                 return pk.get_concentration_whole()
 
     def get_drug_effect(self):
@@ -501,5 +506,5 @@ class EfficacyPredictor(object):
     def get_reservoir_probability_distribution(self):
         return self._pr_distribution
 
-    def get_reservoir_probability_mutation(self):
+    def get_infection_probability_mutation(self):
         return self._pr
